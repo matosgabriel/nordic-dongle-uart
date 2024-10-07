@@ -1,134 +1,144 @@
-/*
- * Copyright (c) 2016 Intel Corporation
- *
- * SPDX-License-Identifier: Apache-2.0
- */
-
-/* Controlling LEDs through UART. Press 1-3 on your keyboard to toggle LEDS 1-3 on your development kit */
-
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/gpio.h>
-//#include <zephyr/sys/printk.h>
-/* STEP 3 - Include the header file of the UART driver in main.c */
 #include <zephyr/drivers/uart.h>
+#include <stdio.h>
+#include <regex.h>
 
-
-/* 1000 msec = 1 sec */
 #define SLEEP_TIME_MS   10
-
-/* STEP 10.1.1 - Define the size of the receive buffer */
 #define RECEIVE_BUFF_SIZE 1024
-
-/* STEP 10.2 - Define the receiving timeout period */
 #define RECEIVE_TIMEOUT 100
 
-/* STEP 5.1 - Get the device pointers of the LEDs through gpio_dt_spec */
-/* The nRF7002dk has only 2 LEDs so this step uses a compile-time condition to reflect the DK you are building for */
-#if defined (CONFIG_BOARD_NRF7002DK_NRF5340_CPUAPP)|| defined (CONFIG_BOARD_NRF7002DK_NRF5340_CPUAPP_NS)
-static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
-static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
-#else
-static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
-static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
-static const struct gpio_dt_spec led2 = GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios);
-#endif
+const struct device *uart = DEVICE_DT_GET(DT_NODELABEL(uart0));
 
-/* STEP 4.1 - Get the device pointer of the UART hardware */
-const struct device *uart= DEVICE_DT_GET(DT_NODELABEL(uart0));
+static uint8_t tx_buf[] =   {"nRF52840 Dongle - ESP8266 Uart communication\n\r"
+                             "The main objective of this work is to use the best of both devices to establish a link between a fire detector circuit and a Thread network\n\r"};
 
+static char rx_buf[RECEIVE_BUFF_SIZE] = {0};  // Buffer de recepção
+static char rx_index = 0;  // Índice do buffer de recepção
 
-/* STEP 9.1 - Define the transmission buffer, which is a buffer to hold the data to be sent over UART */
-static uint8_t tx_buf[] =   {"nRF Connect SDK Fundamentals Course\n\r"
-                             "Press 1-3 on your keyboard to toggle LEDS 1-3 on your development kit\n\r"};
+#include <regex.h>
 
-/* STEP 10.1.2 - Define the receive buffer */
-static uint8_t rx_buf[RECEIVE_BUFF_SIZE] = {0};
+void extract_value(const char *string_to_match, const char *pattern, char *value, int value_size) {
+    regex_t regex;
+    regmatch_t matches[2];  // O primeiro índice é a correspondência total, o segundo é o grupo capturado
+    int result = regcomp(&regex, pattern, REG_EXTENDED);
+    
+    if (result) {
+        // printf("Não foi possível compilar o regex\n");
+        return;
+    }
 
-/* STEP 7 - Define the callback function for UART */
-static void uart_cb(const struct device *dev, struct uart_event *evt, void *user_data)
-{
-	switch (evt->type) {
+    result = regexec(&regex, string_to_match, 2, matches, 0);
+    if (!result) {
+        // Extrai o valor usando a posição do grupo capturado
+        int start = matches[1].rm_so; // Início do grupo do valor
+        int end = matches[1].rm_eo;   // Fim do grupo do valor
 
-	case UART_RX_RDY:
-		#if defined (CONFIG_BOARD_NRF7002DK_NRF5340_CPUAPP)|| defined (CONFIG_BOARD_NRF7002DK_NRF5340_CPUAPP_NS)
-			if((evt->data.rx.len) == 1){
+        // Cria uma string para armazenar o valor capturado
+        snprintf(value, value_size, "%.*s", end - start, string_to_match + start);  // Copia o valor
+    }
+	// else if (result == REG_NOMATCH) {
+    //     printf("Nenhuma correspondência para o padrão: %s\n", pattern);
+    // }
+	else {
+        char errbuf[100];
+        regerror(result, &regex, errbuf, sizeof(errbuf));
+        // printf("Erro na correspondência de regex: %s\n", errbuf);
+    }
 
-			if(evt->data.rx.buf[evt->data.rx.offset] == '1')
-				gpio_pin_toggle_dt(&led0);
-			else if (evt->data.rx.buf[evt->data.rx.offset] == '2')
-				gpio_pin_toggle_dt(&led1);	
-			}
-		#else
-		if((evt->data.rx.len) == 1){
+    // Libera a memória usada pela regex
+    regfree(&regex);
+}
 
-			if(evt->data.rx.buf[evt->data.rx.offset] == '1')
-				gpio_pin_toggle_dt(&led0);
-			else if (evt->data.rx.buf[evt->data.rx.offset] == '2')
-				gpio_pin_toggle_dt(&led1);
-			else if (evt->data.rx.buf[evt->data.rx.offset] == '3')
-				gpio_pin_toggle_dt(&led2);					
-		}
-		k_msleep(SLEEP_TIME_MS);
-		gpio_pin_toggle_dt(&led0);
-		gpio_pin_toggle_dt(&led1);
-		printk("Dongle recebeu: inicio\n%s\nfim", evt->data.rx);
-		#endif
+static void uart_cb(const struct device *dev, struct uart_event *evt, void *user_data) {
+	char temperature[10]; // Para armazenar a temperatura
+    char humidity[10];    // Para armazenar a umidade
+    char microphone[10];  // Para armazenar o valor do microfone
+	char message[50];
 
-		/* Clear the buffer after processing */
-    	// memset(rx_buf, 0, sizeof(rx_buf));  // This will reset the entire receive buffer to 0
-		
-		break;
-	case UART_RX_DISABLED:
-		uart_rx_enable(dev ,rx_buf,sizeof rx_buf,RECEIVE_TIMEOUT);
-		break;
-		
-	default:
-		break;
-	}
+    switch (evt->type) {
+        case UART_RX_RDY:
+            for (int i = 0; i < evt->data.rx.len; i++) {
+                char received_char = evt->data.rx.buf[evt->data.rx.offset + i];
+                
+                // Verifica se o caractere recebido é um delimitador (ex: '\n')
+                if (received_char == '\n' || received_char == '\0') {
+                    rx_buf[rx_index] = '\0';  // Finaliza a string recebida
+                    printk("Mensagem recebida: %s\n", rx_buf);
+
+					// Limpa as variáveis antes de usar
+					memset(temperature, 0, sizeof(temperature));
+					memset(humidity, 0, sizeof(humidity));
+					memset(microphone, 0, sizeof(microphone));
+					memset(message, 0, sizeof(message));
+
+					strcpy(message, rx_buf);
+
+					// Padrões das mensagens
+					char *temperature_pattern = "^\\(HUT2X\\) Temperature: (-?[0-9]+(\\.[0-9]+)?) °C";
+					char *humidity_pattern = "^\\(HUT2X\\) Humidity: (-?[0-9]+(\\.[0-9]+)?) %";
+					char *microphone_pattern = "^\\(WPSE309\\) Microphone sensor value: (-?[0-9]+)";
+
+					// Verifica se a mensagem corresponde ao padrão de temperatura
+					extract_value(message, temperature_pattern, temperature, sizeof(temperature));
+					if (strlen(temperature) > 0) {
+						printf("Valor do sensor de Temperatura: %s\n", temperature);
+					}
+
+					// Verifica se a mensagem corresponde ao padrão de umidade
+					extract_value(message, humidity_pattern, humidity, sizeof(humidity));
+					if (strlen(humidity) > 0) {
+						printf("Valor do sensor de Umidade: %s\n", humidity);
+					}
+
+					// Verifica se a mensagem corresponde ao padrão do microfone
+					extract_value(message, microphone_pattern, microphone, sizeof(microphone));
+					if (strlen(microphone) > 0) {
+						printf("Valor do sensor de Microfone: %s\n", microphone);
+					}
+
+                    // Limpar o buffer após o processamento
+                    // memset(rx_buf, 0, RECEIVE_BUFF_SIZE);
+                    rx_index = 0;  // Resetar o índice do buffer
+                } else {
+                    // Armazena o caractere no buffer de recepção
+                    rx_buf[rx_index++] = received_char;
+                }
+            }
+            break;
+
+        case UART_RX_DISABLED:
+            uart_rx_enable(dev, rx_buf, sizeof(rx_buf), RECEIVE_TIMEOUT);
+            break;
+
+        default:
+            break;
+    }
 }
 
 int main(void)
 {
-	int ret;
+    int ret;
 
-/* STEP 4.2 - Verify that the UART device is ready */ 
-	if (!device_is_ready(uart)){
-		printk("UART device not ready\r\n");
-		return 1;
-	}
-/* STEP 5.2 - Verify that the LED devices are ready */
-	if (!device_is_ready(led0.port)){
-		printk("GPIO device is not ready\r\n");
-		return 1;
-	}
+    if (!device_is_ready(uart)) {
+        printk("UART device not ready\r\n");
+        return 1;
+    }
 
-	ret = gpio_pin_configure_dt(&led0, GPIO_OUTPUT_ACTIVE);
-	if (ret < 0) {
-		return 1 ; 
-	}
+    ret = uart_callback_set(uart, uart_cb, NULL);
+    if (ret) {
+        return 1;
+    }
 
-	ret = uart_callback_set(uart, uart_cb, NULL);
-	printk("ret %d", ret);
-	if (ret) {
-		return 1;
-	}
-	
-	ret = uart_tx(uart, tx_buf, sizeof(tx_buf), SYS_FOREVER_MS);
-	if (ret) {
-		return 1;
-	}
-	
-	ret = uart_rx_enable(uart ,rx_buf,sizeof rx_buf,RECEIVE_TIMEOUT);
-	if (ret) {
-		return 1;
-	}
+    ret = uart_tx(uart, tx_buf, sizeof(tx_buf), SYS_FOREVER_MS);
+    if (ret) {
+        return 1;
+    }
 
-	while (1) {
-		gpio_pin_toggle_dt(&led0);
-
-		k_msleep(SLEEP_TIME_MS);
-	}
-
+    ret = uart_rx_enable(uart, rx_buf, sizeof(rx_buf), RECEIVE_TIMEOUT);
+    if (ret) {
+        return 1;
+    }
 }
